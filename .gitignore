@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.turbo/
+coverage/
+*.log
+.env
+.env.local
+.DS_Store
+
+# Per-example runtime state — captured PATs/secrets/IDs
+examples/*/.state/
+examples/zitadel-app/.env.runtime

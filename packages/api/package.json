@@ -1,0 +1,37 @@
+{
+  "name": "@untenanted/api",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "migrate": "tsx scripts/migrate.ts",
+    "issue-test-token": "tsx scripts/issue-test-token.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist .turbo"
+  },
+  "dependencies": {
+    "@untenanted/adapter-zitadel": "workspace:*",
+    "@untenanted/middleware": "workspace:*",
+    "@untenanted/types": "workspace:*",
+    "fastify": "^4.25.0",
+    "jose": "^5.2.0",
+    "kysely": "^0.27.2",
+    "pg": "^8.11.3",
+    "pino-pretty": "^10.3.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.10.9",
+    "rimraf": "^5.0.5",
+    "tsup": "^8.0.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}

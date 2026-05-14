@@ -1,0 +1,74 @@
+# Standalone dev stack: bring up postgres + the Untenanted API.
+#
+# The postgres service exposes a single instance that can host additional
+# databases (e.g. Zitadel's) — mount more init scripts into
+# /docker-entrypoint-initdb.d to add them. Database connection params for the
+# API are fully overridable via env vars; see .env.example.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: untenanted-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-untenanted.sql:ro
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_ADMIN_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - untenanted
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    container_name: untenanted-api
+    environment:
+      HTTP_PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
+
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-untenanted}
+      DB_USER: ${DB_USER:-untenanted}
+      DB_PASSWORD: ${DB_PASSWORD:-untenanted}
+      DB_SSL: disable
+
+      IDP_JWKS_URI: ${IDP_JWKS_URI}
+      IDP_ISSUER: ${IDP_ISSUER}
+      IDP_AUDIENCE: ${IDP_AUDIENCE}
+      IDP_TOKEN_ENDPOINT: ${IDP_TOKEN_ENDPOINT}
+      IDP_CLIENT_ID: ${IDP_CLIENT_ID}
+      IDP_CLIENT_SECRET: ${IDP_CLIENT_SECRET:-}
+
+      CLAIM_ORG_ID: ${CLAIM_ORG_ID:-org_id}
+      CLAIM_TIDS: ${CLAIM_TIDS:-tids}
+      CLAIM_SCOPE: ${CLAIM_SCOPE:-scope}
+      CLAIM_SUBJECT: ${CLAIM_SUBJECT:-sub}
+
+      INTERNAL_AUTH_SECRET: ${INTERNAL_AUTH_SECRET}
+      WEBHOOK_AUTH_SECRET: ${WEBHOOK_AUTH_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_HOST_PORT:-3000}:3000"
+    networks:
+      - untenanted
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+    name: untenanted-postgres-data
+
+networks:
+  untenanted:
+    name: untenanted

@@ -1,0 +1,236 @@
+# Merged stack: official Zitadel compose (v4.13.0 layout) + Untenanted API,
+# sharing one Postgres instance with two databases (zitadel, untenanted) and
+# one Docker network. The Untenanted API is NOT routed through Traefik — it is
+# published on its own host port to keep the example focused.
+#
+# All Zitadel service definitions follow the upstream
+# https://github.com/zitadel/zitadel/blob/main/deploy/compose/docker-compose.yaml
+# verbatim where possible. The two divergences are:
+#   1) the postgres service mounts an extra init script that creates the
+#      `untenanted` database + user;
+#   2) a new `untenanted-api` service is added on the same `zitadel` network.
+
+name: untenanted-zitadel
+
+services:
+  proxy:
+    image: ${TRAEFIK_IMAGE}
+    restart: unless-stopped
+    networks:
+      zitadel:
+        # auth.localtest.me resolves to 127.0.0.1 publicly (free wildcard DNS).
+        # Inside the docker network we alias the same name to the proxy, so the
+        # Zitadel issuer URL (http://auth.localtest.me:8080) works identically
+        # from the host and from sibling containers. This avoids the host-routing
+        # mismatch we'd get hitting `http://zitadel-api:8080` directly.
+        aliases:
+          - auth.localtest.me
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=zitadel
+      # Listen on :8080 so containers can reach the proxy at the same port
+      # advertised externally (ZITADEL_EXTERNALPORT=8080), removing the
+      # host-vs-internal port asymmetry.
+      - --entrypoints.web.address=:8080
+      - --entrypoints.websecure.address=:443
+      - --api.dashboard=${TRAEFIK_DASHBOARD_ENABLED}
+      - --api.insecure=false
+      - --ping=true
+      - --ping.entrypoint=web
+      - --log.level=${TRAEFIK_LOG_LEVEL}
+      - --accesslog=${TRAEFIK_ACCESSLOG_ENABLED}
+    ports:
+      - "${PROXY_HTTP_PUBLISHED_PORT}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+      zitadel-login:
+        condition: service_healthy
+
+  zitadel-api:
+    image: ghcr.io/zitadel/zitadel:${ZITADEL_VERSION}
+    restart: unless-stopped
+    user: "0"
+    command: start-from-init --masterkey "${ZITADEL_MASTERKEY}"
+    environment:
+      ZITADEL_PORT: 8080
+      ZITADEL_EXTERNALDOMAIN: ${ZITADEL_DOMAIN}
+      ZITADEL_EXTERNALPORT: ${ZITADEL_EXTERNALPORT}
+      ZITADEL_EXTERNALSECURE: ${ZITADEL_EXTERNALSECURE}
+      ZITADEL_TLS_ENABLED: "false"
+
+      ZITADEL_DATABASE_POSTGRES_DSN: ${ZITADEL_DATABASE_POSTGRES_DSN}
+
+      # Default first-instance bootstrap (used by the upstream compose).
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "false"
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel/bootstrap/login-client.pat
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Automatically Initialized IAM_LOGIN_CLIENT
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: ${LOGIN_CLIENT_PAT_EXPIRATION}
+
+      # Extra: an admin machine user with IAM_OWNER + PAT for setup scripts.
+      # Documented in cmd/defaults.yaml under FirstInstance.Org.Machine.
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/admin-machine.pat
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: admin-machine
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Untenanted Admin Machine
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ADMIN_MACHINE_PAT_EXPIRATION}
+
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/ui/v2/login/login?samlRequest=
+
+      ZITADEL_LOGSTORE_ACCESS_STDOUT_ENABLED: ${ZITADEL_ACCESS_LOG_STDOUT_ENABLED}
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:rw
+    networks:
+      - zitadel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=zitadel
+      - traefik.http.services.zitadel-api.loadbalancer.server.port=8080
+      - traefik.http.services.zitadel-api.loadbalancer.server.scheme=h2c
+      - traefik.http.middlewares.zitadel-strip-api.stripprefix.prefixes=/api
+      - traefik.http.middlewares.zitadel-strip-api.stripprefix.forceSlash=false
+      - traefik.http.routers.zitadel-api-alias-web.rule=Host(`${ZITADEL_DOMAIN}`) && PathPrefix(`/api`)
+      - traefik.http.routers.zitadel-api-alias-web.entrypoints=web
+      - traefik.http.routers.zitadel-api-alias-web.middlewares=zitadel-strip-api
+      - traefik.http.routers.zitadel-api-alias-web.service=zitadel-api
+      - traefik.http.routers.zitadel-api-alias-web.priority=200
+      - traefik.http.routers.zitadel-canonical-web.rule=Host(`${ZITADEL_DOMAIN}`) && !PathPrefix(`/ui/v2/login`) && !PathPrefix(`/api`) && !Path(`/`)
+      - traefik.http.routers.zitadel-canonical-web.entrypoints=web
+      - traefik.http.routers.zitadel-canonical-web.service=zitadel-api
+      - traefik.http.routers.zitadel-canonical-web.priority=100
+
+  zitadel-login:
+    image: ghcr.io/zitadel/zitadel-login:${ZITADEL_VERSION}
+    restart: unless-stopped
+    user: "0"
+    environment:
+      ZITADEL_API_URL: http://zitadel-api:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+      CUSTOM_REQUEST_HEADERS: Host:${ZITADEL_DOMAIN},X-Forwarded-Proto:${ZITADEL_PUBLIC_SCHEME}
+    healthcheck:
+      test:
+        - CMD
+        - /bin/sh
+        - -c
+        - node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:ro
+    networks:
+      - zitadel
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=zitadel
+      - traefik.http.services.zitadel-login.loadbalancer.server.port=3000
+      - traefik.http.middlewares.zitadel-root-rewrite.replacepath.path=/ui/v2/login/
+      - traefik.http.routers.zitadel-root-web.rule=Host(`${ZITADEL_DOMAIN}`) && Path(`/`)
+      - traefik.http.routers.zitadel-root-web.entrypoints=web
+      - traefik.http.routers.zitadel-root-web.middlewares=zitadel-root-rewrite
+      - traefik.http.routers.zitadel-root-web.service=zitadel-login
+      - traefik.http.routers.zitadel-root-web.priority=400
+      - traefik.http.routers.zitadel-login-web.rule=Host(`${ZITADEL_DOMAIN}`) && PathPrefix(`/ui/v2/login`)
+      - traefik.http.routers.zitadel-login-web.entrypoints=web
+      - traefik.http.routers.zitadel-login-web.service=zitadel-login
+      - traefik.http.routers.zitadel-login-web.priority=250
+
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -d ${POSTGRES_DB} -U ${POSTGRES_ADMIN_USER}
+      interval: 10s
+      timeout: 30s
+      retries: 10
+      start_period: 20s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data:rw
+      # Extra init script: creates the `untenanted` database alongside `zitadel`.
+      - ./infra/postgres/02-untenanted.sql:/docker-entrypoint-initdb.d/02-untenanted.sql:ro
+    networks:
+      - zitadel
+
+  untenanted-api:
+    build:
+      context: ../..
+      dockerfile: packages/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      HTTP_PORT: 3000
+      LOG_LEVEL: info
+      AUTO_MIGRATE: "true"
+
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: untenanted
+      DB_USER: untenanted
+      DB_PASSWORD: untenanted
+      DB_SSL: disable
+
+      # Both the JWKS fetch and the issuer must use the same hostname so that
+      # Zitadel's host-routing accepts the request AND the iss claim matches.
+      IDP_JWKS_URI: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/oauth/v2/keys
+      IDP_ISSUER: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}
+      IDP_AUDIENCE: ${UNTENANTED_AUDIENCE}
+      IDP_TOKEN_ENDPOINT: ${ZITADEL_PUBLIC_SCHEME}://${ZITADEL_DOMAIN}:${ZITADEL_EXTERNALPORT}/oauth/v2/token
+      IDP_CLIENT_ID: ${UNTENANTED_CLIENT_ID}
+      IDP_CLIENT_SECRET: ${UNTENANTED_CLIENT_SECRET}
+
+      CLAIM_ORG_ID: ${CLAIM_ORG_ID}
+      CLAIM_TIDS: ${CLAIM_TIDS}
+      CLAIM_SCOPE: scope
+      CLAIM_SUBJECT: sub
+
+      INTERNAL_AUTH_SECRET: ${INTERNAL_AUTH_SECRET}
+      WEBHOOK_AUTH_SECRET: ${WEBHOOK_AUTH_SECRET}
+
+      # Enable the bundled Zitadel adapter — adds /adapters/zitadel/* routes.
+      IDP_ADAPTERS: zitadel
+      ADAPTER_ZITADEL_SIGNING_KEYS: ${ADAPTER_ZITADEL_SIGNING_KEYS:-}
+      ADAPTER_ZITADEL_TIDS_CLAIM: ${CLAIM_TIDS}
+      ADAPTER_ZITADEL_ORG_CLAIM: ${CLAIM_ORG_ID}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zitadel-api:
+        condition: service_healthy
+    ports:
+      - "${UNTENANTED_HOST_PORT}:3000"
+    networks:
+      - zitadel
+
+networks:
+  zitadel:
+    name: zitadel
+
+volumes:
+  postgres-data:
+  zitadel-bootstrap:

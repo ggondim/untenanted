@@ -1,0 +1,59 @@
+# Run only the Untenanted API, pointing at an external Postgres (e.g. the
+# one Zitadel uses). Requires DB_HOST to be set; DB_USER/DB_PASSWORD/DB_NAME
+# default to "untenanted" but should be tailored.
+#
+# Before bringing this up, ensure the external Postgres already has the
+# `untenanted` database + user created. The easiest way is to mount
+# infra/postgres/init.sql into the other compose's
+# /docker-entrypoint-initdb.d, so the first boot of that Postgres provisions
+# both databases.
+#
+# Networking: attach to the external network where the other compose put
+# Postgres. Replace `shared-pg-net` with the actual external network name.
+#
+# Example invocation:
+#   docker compose -f docker-compose.shared-pg.yml --env-file .env up
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    container_name: untenanted-api
+    environment:
+      HTTP_PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
+
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-untenanted}
+      DB_USER: ${DB_USER:-untenanted}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SSL: ${DB_SSL:-disable}
+
+      IDP_JWKS_URI: ${IDP_JWKS_URI}
+      IDP_ISSUER: ${IDP_ISSUER}
+      IDP_AUDIENCE: ${IDP_AUDIENCE}
+      IDP_TOKEN_ENDPOINT: ${IDP_TOKEN_ENDPOINT}
+      IDP_CLIENT_ID: ${IDP_CLIENT_ID}
+      IDP_CLIENT_SECRET: ${IDP_CLIENT_SECRET:-}
+
+      CLAIM_ORG_ID: ${CLAIM_ORG_ID:-org_id}
+      CLAIM_TIDS: ${CLAIM_TIDS:-tids}
+      CLAIM_SCOPE: ${CLAIM_SCOPE:-scope}
+      CLAIM_SUBJECT: ${CLAIM_SUBJECT:-sub}
+
+      INTERNAL_AUTH_SECRET: ${INTERNAL_AUTH_SECRET}
+      WEBHOOK_AUTH_SECRET: ${WEBHOOK_AUTH_SECRET}
+    ports:
+      - "${API_HOST_PORT:-3000}:3000"
+    networks:
+      - default
+      - shared-pg-net
+    restart: unless-stopped
+
+networks:
+  shared-pg-net:
+    name: ${SHARED_PG_NETWORK:-shared-pg}
+    external: true
