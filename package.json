@@ -14,7 +14,9 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "dev": "turbo run dev",
-    "clean": "turbo run clean && rimraf node_modules"
+    "clean": "turbo run clean && rimraf node_modules",
+    "publish": "pnpm build && pnpm -r publish --access public --no-git-checks",
+    "publish:dry": "pnpm build && pnpm -r publish --access public --no-git-checks --dry-run"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
